@@ -702,6 +702,10 @@ clean:
         crates/wasm/node_modules \
         crates/wasm/pkg-test/ \
         crates/wasm/pkg/ \
+        integrations/openclaw/.test-dist \
+        integrations/openclaw/dist \
+        integrations/openclaw/node_modules \
+        node_modules \
         docs/_build/ \
         docs/reference/api/**/_generated/ \
         docs/reference/api/**/_source/ \
@@ -881,6 +885,20 @@ test-node:
         npm test --workspace=nemo-flow-node
     fi
 
+# --set [ci=true|false]
+test-openclaw:
+    #!/usr/bin/env bash
+    {{ bash_helpers }}
+    cd "$NEMO_FLOW_REPO_ROOT"
+    if is_true "{{ ci }}"; then
+        npm ci --ignore-scripts
+        npm run build-debug --workspace=nemo-flow-node
+    else
+        npm install --ignore-scripts
+    fi
+    npm run typecheck --workspace=nemo-flow-openclaw
+    npm test --workspace=nemo-flow-openclaw
+
 # --set [output_dir=<path>] [ci=true|false]
 test-wasm:
     #!/usr/bin/env bash
@@ -920,7 +938,7 @@ test-wasm:
     fi
 
 # --set [output_dir=<path>] [ci=true|false]
-test-all: test-rust test-python test-go test-node test-wasm
+test-all: test-rust test-python test-go test-node test-openclaw test-wasm
 
 # [version] or --set ref_name=<version>
 set-version version="":
