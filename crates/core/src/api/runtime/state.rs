@@ -25,17 +25,25 @@ use crate::api::runtime::callbacks::{
     LlmStreamExecutionRegistryRefs, ToolConditionalFn, ToolExecutionFn, ToolExecutionNextFn,
     ToolInterceptFn, ToolSanitizeFn,
 };
-use crate::api::scope::{CreateScopeHandleParams, EndScopeHandleParams, ScopeHandle};
+use crate::api::scope::{CreateScopeHandleParams, EndScopeHandleParams, ScopeHandle, ScopeType};
 use crate::api::tool::ToolHandle;
 use crate::api::tool::{CreateToolHandleParams, EndToolHandleParams};
 use crate::codec::request::AnnotatedLlmRequest;
 use crate::codec::response::AnnotatedLlmResponse;
 use crate::context::registries::{
     merge_execution_intercept_callables, merge_guardrail_entries, merge_intercept_entries,
+    merge_named_guardrail_entries,
 };
 use crate::json::{Json, merge_json};
 use crate::registry::SortedRegistry;
 use chrono::{Duration, Utc};
+use serde_json::json;
+use uuid::Uuid;
+
+pub(crate) struct ConditionalGuardrailSnapshot<F> {
+    name: String,
+    guardrail: F,
+}
 
 /// Process-global runtime state backing middleware and event emission.
 ///
@@ -527,6 +535,59 @@ impl NemoFlowContextState {
         ))
     }
 
+    fn emit_guardrail_scope_start(
+        name: &str,
+        parent_uuid: Option<Uuid>,
+        metadata: Option<Json>,
+        input: Json,
+        subscribers: &[EventSubscriberFn],
+    ) -> ScopeHandle {
+        let handle = ScopeHandle::builder()
+            .name(name)
+            .scope_type(ScopeType::Guardrail)
+            .parent_uuid_opt(parent_uuid)
+            .metadata_opt(metadata)
+            .build();
+        let event = Event::Scope(ScopeEvent::new(
+            BaseEvent::builder()
+                .parent_uuid_opt(handle.parent_uuid)
+                .uuid(handle.uuid)
+                .timestamp(handle.started_at)
+                .name(handle.name.as_str())
+                .data(input)
+                .metadata_opt(handle.metadata.clone())
+                .build(),
+            ScopeCategory::Start,
+            scope_attributes_to_strings(handle.attributes),
+            EventCategory::from(handle.scope_type),
+            None,
+        ));
+        Self::emit_event(&event, subscribers);
+        handle
+    }
+
+    fn emit_guardrail_scope_end(
+        handle: &ScopeHandle,
+        output: Json,
+        subscribers: &[EventSubscriberFn],
+    ) {
+        let event = Event::Scope(ScopeEvent::new(
+            BaseEvent::builder()
+                .parent_uuid_opt(handle.parent_uuid)
+                .uuid(handle.uuid)
+                .timestamp(end_timestamp_after(handle.started_at))
+                .name(handle.name.as_str())
+                .data(output)
+                .metadata_opt(handle.metadata.clone())
+                .build(),
+            ScopeCategory::End,
+            scope_attributes_to_strings(handle.attributes),
+            EventCategory::from(handle.scope_type),
+            None,
+        ));
+        Self::emit_event(&event, subscribers);
+    }
+
     /// Run tool request sanitizers across global and scope-local registries.
     ///
     /// # Parameters
@@ -576,6 +637,28 @@ impl NemoFlowContextState {
         value
     }
 
+    /// Snapshot tool conditional-execution guardrails in priority order.
+    ///
+    /// # Parameters
+    /// - `scope_locals`: Scope-local conditional guardrail registries collected
+    ///   from the active scope stack.
+    ///
+    /// # Returns
+    /// Owned guardrail snapshots that can be evaluated after registry locks
+    /// are released.
+    pub(crate) fn tool_conditional_execution_entries(
+        &self,
+        scope_locals: &[&SortedRegistry<GuardrailEntry<ToolConditionalFn>>],
+    ) -> Vec<ConditionalGuardrailSnapshot<ToolConditionalFn>> {
+        merge_named_guardrail_entries(&self.tool_conditional_execution_guardrails, scope_locals)
+            .into_iter()
+            .map(|(name, entry)| ConditionalGuardrailSnapshot {
+                name: name.to_string(),
+                guardrail: entry.guardrail.clone(),
+            })
+            .collect()
+    }
+
     /// Evaluate tool conditional-execution guardrails in priority order.
     ///
     /// # Parameters
@@ -600,6 +683,75 @@ impl NemoFlowContextState {
             merge_guardrail_entries(&self.tool_conditional_execution_guardrails, scope_locals);
         for entry in entries {
             if let Some(error) = (entry.guardrail)(name, args)? {
+                return Ok(Some(error));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Evaluate a snapshot of tool conditional-execution guardrails in priority order.
+    ///
+    /// This function emits guardrail scope start/end events while evaluating
+    /// the provided entries. Callers should pass entries snapped from the
+    /// global and scope-local registries so subscriber callbacks run without
+    /// registry locks held. If `entries` is empty, no guardrail scopes are
+    /// emitted. Guardrail start events identify the guardrail and target but
+    /// intentionally omit raw tool arguments from their event data.
+    ///
+    /// # Parameters
+    /// - `name`: Tool name associated with the request.
+    /// - `args`: Tool arguments to validate.
+    /// - `entries`: Owned conditional guardrail snapshots to evaluate.
+    /// - `subscribers`: Event subscribers that should observe guardrail scope
+    ///   start/end events.
+    /// - `parent_uuid`: Optional parent scope UUID for emitted guardrail
+    ///   scopes.
+    /// - `metadata`: Optional metadata attached to emitted guardrail scopes.
+    ///
+    /// # Returns
+    /// A [`Result`](crate::error::Result) containing `Ok(None)` when execution
+    /// is allowed or `Ok(Some(reason))` when a guardrail rejects the call.
+    ///
+    /// # Errors
+    /// Propagates any error returned by a guardrail callback after emitting the
+    /// corresponding guardrail scope end event.
+    pub(crate) fn tool_conditional_execution_snapshot_chain(
+        name: &str,
+        args: &Json,
+        entries: Vec<ConditionalGuardrailSnapshot<ToolConditionalFn>>,
+        subscribers: &[EventSubscriberFn],
+        parent_uuid: Option<Uuid>,
+        metadata: Option<Json>,
+    ) -> crate::error::Result<Option<String>> {
+        for entry in entries {
+            let handle = Self::emit_guardrail_scope_start(
+                &entry.name,
+                parent_uuid,
+                metadata.clone(),
+                json!({
+                    "kind": "tool_conditional_execution",
+                    "target_name": name,
+                }),
+                subscribers,
+            );
+            let result = (entry.guardrail)(name, args);
+            let output = match &result {
+                Ok(Some(reason)) => json!({
+                    "allowed": false,
+                    "rejected": true,
+                    "rejection_reason": reason,
+                }),
+                Ok(None) => json!({
+                    "allowed": true,
+                    "rejected": false,
+                }),
+                Err(error) => json!({
+                    "allowed": false,
+                    "error": error.to_string(),
+                }),
+            };
+            Self::emit_guardrail_scope_end(&handle, output, subscribers);
+            if let Some(error) = result? {
                 return Ok(Some(error));
             }
         }
@@ -713,6 +865,28 @@ impl NemoFlowContextState {
         value
     }
 
+    /// Snapshot LLM conditional-execution guardrails in priority order.
+    ///
+    /// # Parameters
+    /// - `scope_locals`: Scope-local conditional guardrail registries collected
+    ///   from the active scope stack.
+    ///
+    /// # Returns
+    /// Owned guardrail snapshots that can be evaluated after registry locks
+    /// are released.
+    pub(crate) fn llm_conditional_execution_entries(
+        &self,
+        scope_locals: &[&SortedRegistry<GuardrailEntry<LlmConditionalFn>>],
+    ) -> Vec<ConditionalGuardrailSnapshot<LlmConditionalFn>> {
+        merge_named_guardrail_entries(&self.llm_conditional_execution_guardrails, scope_locals)
+            .into_iter()
+            .map(|(name, entry)| ConditionalGuardrailSnapshot {
+                name: name.to_string(),
+                guardrail: entry.guardrail.clone(),
+            })
+            .collect()
+    }
+
     /// Evaluate LLM conditional-execution guardrails in priority order.
     ///
     /// # Parameters
@@ -735,6 +909,72 @@ impl NemoFlowContextState {
             merge_guardrail_entries(&self.llm_conditional_execution_guardrails, scope_locals);
         for entry in entries {
             if let Some(error) = (entry.guardrail)(request)? {
+                return Ok(Some(error));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Evaluate a snapshot of LLM conditional-execution guardrails in priority order.
+    ///
+    /// This function emits guardrail scope start/end events while evaluating
+    /// the provided entries. Callers should pass entries snapped from the
+    /// global and scope-local registries so subscriber callbacks run without
+    /// registry locks held. If `entries` is empty, no guardrail scopes are
+    /// emitted. Guardrail start events identify the guardrail but intentionally
+    /// omit raw LLM requests from their event data.
+    ///
+    /// # Parameters
+    /// - `request`: LLM request to validate.
+    /// - `entries`: Owned conditional guardrail snapshots to evaluate.
+    /// - `subscribers`: Event subscribers that should observe guardrail scope
+    ///   start/end events.
+    /// - `parent_uuid`: Optional parent scope UUID for emitted guardrail
+    ///   scopes.
+    /// - `metadata`: Optional metadata attached to emitted guardrail scopes.
+    ///
+    /// # Returns
+    /// A [`Result`](crate::error::Result) containing `Ok(None)` when execution
+    /// is allowed or `Ok(Some(reason))` when a guardrail rejects the call.
+    ///
+    /// # Errors
+    /// Propagates any error returned by a guardrail callback after emitting the
+    /// corresponding guardrail scope end event.
+    pub(crate) fn llm_conditional_execution_snapshot_chain(
+        request: &LlmRequest,
+        entries: Vec<ConditionalGuardrailSnapshot<LlmConditionalFn>>,
+        subscribers: &[EventSubscriberFn],
+        parent_uuid: Option<Uuid>,
+        metadata: Option<Json>,
+    ) -> crate::error::Result<Option<String>> {
+        for entry in entries {
+            let handle = Self::emit_guardrail_scope_start(
+                &entry.name,
+                parent_uuid,
+                metadata.clone(),
+                json!({
+                    "kind": "llm_conditional_execution",
+                }),
+                subscribers,
+            );
+            let result = (entry.guardrail)(request);
+            let output = match &result {
+                Ok(Some(reason)) => json!({
+                    "allowed": false,
+                    "rejected": true,
+                    "rejection_reason": reason,
+                }),
+                Ok(None) => json!({
+                    "allowed": true,
+                    "rejected": false,
+                }),
+                Err(error) => json!({
+                    "allowed": false,
+                    "error": error.to_string(),
+                }),
+            };
+            Self::emit_guardrail_scope_end(&handle, output, subscribers);
+            if let Some(error) = result? {
                 return Ok(Some(error));
             }
         }

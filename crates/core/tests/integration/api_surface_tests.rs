@@ -371,7 +371,7 @@ fn test_global_registry_and_subscriber_wrappers_cover_success_and_duplicates() {
     register_tool_conditional_execution_guardrail(
         "tool-conditional",
         1,
-        Box::new(|_name, _args| Ok(None)),
+        Arc::new(|_name, _args| Ok(None)),
     )
     .unwrap();
     assert!(deregister_tool_conditional_execution_guardrail("tool-conditional").unwrap());
@@ -403,7 +403,7 @@ fn test_global_registry_and_subscriber_wrappers_cover_success_and_duplicates() {
     register_llm_conditional_execution_guardrail(
         "llm-conditional",
         1,
-        Box::new(|_request| Ok(None)),
+        Arc::new(|_request| Ok(None)),
     )
     .unwrap();
     assert!(deregister_llm_conditional_execution_guardrail("llm-conditional").unwrap());
@@ -499,7 +499,7 @@ fn test_scope_registry_and_subscriber_wrappers_cover_success_duplicates_and_miss
         &scope.uuid,
         "tool-conditional",
         1,
-        Box::new(|_name, _args| Ok(None)),
+        Arc::new(|_name, _args| Ok(None)),
     )
     .unwrap();
     assert!(
@@ -554,7 +554,7 @@ fn test_scope_registry_and_subscriber_wrappers_cover_success_duplicates_and_miss
         &scope.uuid,
         "llm-conditional",
         1,
-        Box::new(|_request| Ok(None)),
+        Arc::new(|_request| Ok(None)),
     )
     .unwrap();
     assert!(
@@ -745,7 +745,7 @@ async fn test_tool_api_emits_sanitized_events_and_covers_error_paths() {
     register_tool_conditional_execution_guardrail(
         "tool-reject",
         1,
-        Box::new(|_name, _args| Ok(Some("tool denied".into()))),
+        Arc::new(|_name, _args| Ok(Some("tool denied".into()))),
     )
     .unwrap();
     assert!(matches!(
@@ -908,7 +908,7 @@ async fn test_llm_api_emits_sanitized_events_and_covers_error_paths() {
     register_llm_conditional_execution_guardrail(
         "llm-reject",
         1,
-        Box::new(|_request| Ok(Some("llm denied".into()))),
+        Arc::new(|_request| Ok(Some("llm denied".into()))),
     )
     .unwrap();
     assert!(matches!(
@@ -1189,7 +1189,7 @@ async fn test_llm_stream_api_covers_success_rejection_and_execution_error_paths(
     register_llm_conditional_execution_guardrail(
         "llm-stream-reject",
         1,
-        Box::new(|_request| Ok(Some("stream denied".into()))),
+        Arc::new(|_request| Ok(Some("stream denied".into()))),
     )
     .unwrap();
     let reject_collector: Box<dyn FnMut(Json) -> Result<()> + Send> = Box::new(|_chunk| Ok(()));

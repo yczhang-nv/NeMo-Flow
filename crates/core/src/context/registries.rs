@@ -105,6 +105,27 @@ pub fn merge_guardrail_entries<'a, F>(
     all
 }
 
+/// Merge named global and scope-local guardrail entries in priority order.
+///
+/// # Parameters
+/// - `global`: Process-global guardrail registry.
+/// - `scope_locals`: Scope-local registries collected from active scopes.
+///
+/// # Returns
+/// A vector of `(name, guardrail entry)` pairs sorted by ascending priority.
+pub(crate) fn merge_named_guardrail_entries<'a, F>(
+    global: &'a SortedRegistry<GuardrailEntry<F>>,
+    scope_locals: &'a [&'a SortedRegistry<GuardrailEntry<F>>],
+) -> Vec<(&'a str, &'a GuardrailEntry<F>)> {
+    let mut all = Vec::new();
+    all.extend(global.sorted_entries());
+    for registry in scope_locals {
+        all.extend(registry.sorted_entries());
+    }
+    all.sort_by_key(|(_, entry)| entry.priority);
+    all
+}
+
 /// Merge global and scope-local intercept entries into one priority-sorted list.
 ///
 /// # Parameters

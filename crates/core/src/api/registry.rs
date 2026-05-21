@@ -69,7 +69,13 @@ macro_rules! global_guardrail_registry_api {
                 .map_err(|error| FlowError::Internal(error.to_string()))?;
             state
                 .$field
-                .register(name.to_string(), GuardrailEntry { priority, guardrail })
+                .register(
+                    name.to_string(),
+                    GuardrailEntry {
+                        priority,
+                        guardrail: guardrail.into(),
+                    },
+                )
                 .map_err(FlowError::AlreadyExists)
         }
 
@@ -259,7 +265,13 @@ macro_rules! scope_guardrail_registry_api {
                 .ok_or_else(|| FlowError::NotFound(format!("scope {scope_uuid} not found")))?;
             registries
                 .$field
-                .register(name.to_string(), GuardrailEntry { priority, guardrail })
+                .register(
+                    name.to_string(),
+                    GuardrailEntry {
+                        priority,
+                        guardrail: guardrail.into(),
+                    },
+                )
                 .map_err(FlowError::AlreadyExists)
         }
 

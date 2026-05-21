@@ -628,7 +628,7 @@ async fn test_conditional_guardrail_rejects() {
     register_tool_conditional_execution_guardrail(
         "rejector",
         1,
-        Box::new(|_name, _args| Ok(Some("not allowed".to_string()))),
+        Arc::new(|_name, _args| Ok(Some("not allowed".to_string()))),
     )
     .unwrap();
 
@@ -662,7 +662,7 @@ async fn test_conditional_guardrail_allows() {
     reset_global();
     setup_isolated_thread();
 
-    register_tool_conditional_execution_guardrail("allower", 1, Box::new(|_name, _args| Ok(None)))
+    register_tool_conditional_execution_guardrail("allower", 1, Arc::new(|_name, _args| Ok(None)))
         .unwrap();
 
     let func: ToolExecutionNextFn = Arc::new(|args| Box::pin(async move { Ok(args) }));
@@ -683,6 +683,102 @@ async fn test_conditional_guardrail_allows() {
     deregister_tool_conditional_execution_guardrail("allower").unwrap();
 }
 
+/// Conditional tool guardrails emit Guardrail scope start/end pairs for allow
+/// and reject decisions.
+#[tokio::test]
+async fn test_tool_conditional_guardrail_emits_guardrail_scope() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    reset_global();
+    setup_isolated_thread();
+
+    let events = Arc::new(Mutex::new(Vec::<Event>::new()));
+    let captured = events.clone();
+    register_subscriber(
+        "tool_guardrail_scope_capture",
+        Arc::new(move |event| {
+            captured.lock().unwrap().push(event.clone());
+        }),
+    )
+    .unwrap();
+
+    register_tool_conditional_execution_guardrail("tool_scope_allow", 1, Arc::new(|_, _| Ok(None)))
+        .unwrap();
+    register_tool_conditional_execution_guardrail(
+        "tool_scope_reject",
+        2,
+        Arc::new(|_, _| Ok(Some("blocked by tool guardrail".to_string()))),
+    )
+    .unwrap();
+    assert!(global_context().read().unwrap().extensions.is_empty());
+
+    let func: ToolExecutionNextFn = Arc::new(|args| Box::pin(async move { Ok(args) }));
+    let allowed = tool_call_execute(
+        nemo_flow::api::tool::ToolCallExecuteParams::builder()
+            .name("safe_tool")
+            .args(json!({"safe": true}))
+            .func(func.clone())
+            .build(),
+    )
+    .await;
+    assert!(allowed.is_err(), "second guardrail should reject");
+
+    deregister_tool_conditional_execution_guardrail("tool_scope_reject").unwrap();
+    let allowed = tool_call_execute(
+        nemo_flow::api::tool::ToolCallExecuteParams::builder()
+            .name("safe_tool")
+            .args(json!({"safe": true}))
+            .func(func)
+            .build(),
+    )
+    .await;
+    assert!(allowed.is_ok());
+
+    deregister_tool_conditional_execution_guardrail("tool_scope_allow").unwrap();
+    deregister_subscriber("tool_guardrail_scope_capture").unwrap();
+
+    let events = events.lock().unwrap();
+    let guardrail_events = events
+        .iter()
+        .filter(|event| event.scope_type() == Some(ScopeType::Guardrail))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        guardrail_events
+            .iter()
+            .filter(|event| event.scope_category() == Some(ScopeCategory::Start))
+            .count(),
+        3
+    );
+    assert_eq!(
+        guardrail_events
+            .iter()
+            .filter(|event| event.scope_category() == Some(ScopeCategory::End))
+            .count(),
+        3
+    );
+    assert!(guardrail_events.iter().all(|event| {
+        event.scope_category() != Some(ScopeCategory::Start)
+            || event.data().and_then(|data| data.get("input")).is_none()
+    }));
+    assert!(guardrail_events.iter().any(|event| {
+        event.name() == "tool_scope_allow"
+            && event.scope_category() == Some(ScopeCategory::End)
+            && event
+                .data()
+                .and_then(|data| data.get("allowed"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+    }));
+    assert!(guardrail_events.iter().any(|event| {
+        event.name() == "tool_scope_reject"
+            && event.scope_category() == Some(ScopeCategory::End)
+            && event
+                .data()
+                .and_then(|data| data.get("rejection_reason"))
+                .and_then(|value| value.as_str())
+                == Some("blocked by tool guardrail")
+    }));
+}
+
 /// Multiple conditional guardrails: first allows, second rejects.
 /// The second one should reject (first rejection wins).
 #[tokio::test]
@@ -691,13 +787,13 @@ async fn test_conditional_guardrail_first_rejection_wins() {
     reset_global();
     setup_isolated_thread();
 
-    register_tool_conditional_execution_guardrail("allows", 1, Box::new(|_name, _args| Ok(None)))
+    register_tool_conditional_execution_guardrail("allows", 1, Arc::new(|_name, _args| Ok(None)))
         .unwrap();
 
     register_tool_conditional_execution_guardrail(
         "rejects",
         2,
-        Box::new(|_name, _args| Ok(Some("blocked by second".to_string()))),
+        Arc::new(|_name, _args| Ok(Some("blocked by second".to_string()))),
     )
     .unwrap();
 
@@ -735,7 +831,7 @@ async fn test_conditional_guardrail_tool_name_filtering() {
     register_tool_conditional_execution_guardrail(
         "name_filter",
         1,
-        Box::new(|name, _args| {
+        Arc::new(|name, _args| {
             if name == "dangerous_tool" {
                 Ok(Some("dangerous_tool is forbidden".to_string()))
             } else {
@@ -1091,7 +1187,7 @@ async fn test_conditional_rejection_prevents_intercepts() {
     register_tool_conditional_execution_guardrail(
         "gate",
         1,
-        Box::new(|_name, _args| Ok(Some("blocked".to_string()))),
+        Arc::new(|_name, _args| Ok(Some("blocked".to_string()))),
     )
     .unwrap();
 
@@ -1142,7 +1238,7 @@ async fn test_conditional_rejection_prevents_execution() {
     register_tool_conditional_execution_guardrail(
         "gate2",
         1,
-        Box::new(|_name, _args| Ok(Some("no execution".to_string()))),
+        Arc::new(|_name, _args| Ok(Some("no execution".to_string()))),
     )
     .unwrap();
 
@@ -1530,7 +1626,7 @@ async fn test_full_pipeline_integration() {
     register_tool_conditional_execution_guardrail(
         "conditional",
         1,
-        Box::new(move |_name, _args| {
+        Arc::new(move |_name, _args| {
             o3.lock().unwrap().push("conditional".into());
             Ok(None) // Allow
         }),
@@ -1747,7 +1843,7 @@ async fn test_llm_conditional_guardrail_rejects() {
     register_llm_conditional_execution_guardrail(
         "llm_gate",
         1,
-        Box::new(|_req| Ok(Some("LLM call rejected".to_string()))),
+        Arc::new(|_req| Ok(Some("LLM call rejected".to_string()))),
     )
     .unwrap();
 
@@ -1778,6 +1874,107 @@ async fn test_llm_conditional_guardrail_rejects() {
 
     // Cleanup
     deregister_llm_conditional_execution_guardrail("llm_gate").unwrap();
+}
+
+/// Conditional LLM guardrails emit Guardrail scope start/end pairs for allow
+/// and reject decisions.
+#[tokio::test]
+async fn test_llm_conditional_guardrail_emits_guardrail_scope() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    reset_global();
+    setup_isolated_thread();
+
+    let events = Arc::new(Mutex::new(Vec::<Event>::new()));
+    let captured = events.clone();
+    register_subscriber(
+        "llm_guardrail_scope_capture",
+        Arc::new(move |event| {
+            captured.lock().unwrap().push(event.clone());
+        }),
+    )
+    .unwrap();
+
+    register_llm_conditional_execution_guardrail("llm_scope_allow", 1, Arc::new(|_| Ok(None)))
+        .unwrap();
+    register_llm_conditional_execution_guardrail(
+        "llm_scope_reject",
+        2,
+        Arc::new(|_| Ok(Some("blocked by llm guardrail".to_string()))),
+    )
+    .unwrap();
+
+    let func: LlmExecutionNextFn =
+        Arc::new(|_req| Box::pin(async move { Ok(json!({"response": "ok"})) }));
+    let request = LlmRequest {
+        headers: serde_json::Map::new(),
+        content: json!({"prompt": "hello"}),
+    };
+
+    let rejected = llm_call_execute(
+        LlmCallExecuteParams::builder()
+            .name("test_llm")
+            .request(request.clone())
+            .func(func.clone())
+            .build(),
+    )
+    .await;
+    assert!(rejected.is_err());
+
+    deregister_llm_conditional_execution_guardrail("llm_scope_reject").unwrap();
+    let allowed = llm_call_execute(
+        LlmCallExecuteParams::builder()
+            .name("test_llm")
+            .request(request)
+            .func(func)
+            .build(),
+    )
+    .await;
+    assert!(allowed.is_ok());
+
+    deregister_llm_conditional_execution_guardrail("llm_scope_allow").unwrap();
+    deregister_subscriber("llm_guardrail_scope_capture").unwrap();
+
+    let events = events.lock().unwrap();
+    let guardrail_events = events
+        .iter()
+        .filter(|event| event.scope_type() == Some(ScopeType::Guardrail))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        guardrail_events
+            .iter()
+            .filter(|event| event.scope_category() == Some(ScopeCategory::Start))
+            .count(),
+        3
+    );
+    assert_eq!(
+        guardrail_events
+            .iter()
+            .filter(|event| event.scope_category() == Some(ScopeCategory::End))
+            .count(),
+        3
+    );
+    assert!(guardrail_events.iter().all(|event| {
+        event.scope_category() != Some(ScopeCategory::Start)
+            || event.data().and_then(|data| data.get("input")).is_none()
+    }));
+    assert!(guardrail_events.iter().any(|event| {
+        event.name() == "llm_scope_allow"
+            && event.scope_category() == Some(ScopeCategory::End)
+            && event
+                .data()
+                .and_then(|data| data.get("allowed"))
+                .and_then(|value| value.as_bool())
+                == Some(true)
+    }));
+    assert!(guardrail_events.iter().any(|event| {
+        event.name() == "llm_scope_reject"
+            && event.scope_category() == Some(ScopeCategory::End)
+            && event
+                .data()
+                .and_then(|data| data.get("rejection_reason"))
+                .and_then(|value| value.as_str())
+                == Some("blocked by llm guardrail")
+    }));
 }
 
 /// LLM request intercept transforms the request.
@@ -2113,7 +2310,7 @@ fn test_standalone_conditional_execution_rejects() {
     register_tool_conditional_execution_guardrail(
         "standalone_gate",
         1,
-        Box::new(|_name, _args| Ok(Some("rejected by standalone".to_string()))),
+        Arc::new(|_name, _args| Ok(Some("rejected by standalone".to_string()))),
     )
     .unwrap();
 
