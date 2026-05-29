@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	pushScopeFailed = "PushScope failed: %v"
-	emitEventFailed = "EmitEvent failed: %v"
+	pushScopeFailed          = "PushScope failed: %v"
+	emitEventFailed          = "EmitEvent failed: %v"
+	registerSubscriberFailed = "RegisterSubscriber failed: %v"
+	flushSubscribersFailed   = "FlushSubscribers failed: %v"
 )
 
 type scopeTypeContract struct {
@@ -142,7 +144,7 @@ func TestEventJSONHelpers(t *testing.T) {
 			}
 		}
 	}); err != nil {
-		t.Fatalf("RegisterSubscriber failed: %v", err)
+		t.Fatalf(registerSubscriberFailed, err)
 	}
 	defer DeregisterSubscriber(subscriberName)
 
@@ -397,12 +399,15 @@ func TestSubscriberRegistration(t *testing.T) {
 		mu.Unlock()
 	})
 	if err != nil {
-		t.Fatalf("RegisterSubscriber failed: %v", err)
+		t.Fatalf(registerSubscriberFailed, err)
 	}
 
 	// Push scope emits start event
 	handle, _ := PushScope("s", ScopeTypeFunction)
 	PopScope(handle)
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
 
 	mu.Lock()
 	c := count
@@ -414,6 +419,35 @@ func TestSubscriberRegistration(t *testing.T) {
 	err = DeregisterSubscriber("go_test_sub")
 	if err != nil {
 		t.Fatalf("DeregisterSubscriber failed: %v", err)
+	}
+}
+
+func TestFlushSubscribersWaitsForQueuedDelivery(t *testing.T) {
+	seen := false
+	var mu sync.Mutex
+
+	if err := RegisterSubscriber("go_flush_sub", func(event Event) {
+		if event.Kind() == "mark" && event.Name() == "go_flush_mark" {
+			mu.Lock()
+			seen = true
+			mu.Unlock()
+		}
+	}); err != nil {
+		t.Fatalf(registerSubscriberFailed, err)
+	}
+	defer DeregisterSubscriber("go_flush_sub")
+
+	if err := EmitEvent("go_flush_mark"); err != nil {
+		t.Fatalf(emitEventFailed, err)
+	}
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !seen {
+		t.Fatal("expected flushed subscriber to observe mark")
 	}
 }
 
@@ -457,6 +491,9 @@ func TestSubscriberEventProperties(t *testing.T) {
 
 	handle, _ := PushScope("prop_test", ScopeTypeAgent)
 	PopScope(handle)
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
 	DeregisterSubscriber("go_evt_props")
 
 	mu.Lock()
@@ -488,6 +525,9 @@ func TestMarkEvent(t *testing.T) {
 	})
 
 	EmitEvent("test_mark", WithEventData(json.RawMessage(`{"info": "test"}`)))
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
 	DeregisterSubscriber("go_mark_sub")
 
 	mu.Lock()
@@ -542,6 +582,9 @@ func TestEventScopeTypeMatchesEventFamily(t *testing.T) {
 	}
 	if err := PopScope(parent); err != nil {
 		t.Fatalf("PopScope parent failed: %v", err)
+	}
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
 	}
 
 	mu.Lock()
@@ -636,6 +679,9 @@ func TestScopeEventWithDataAndMetadata(t *testing.T) {
 		WithEventData(json.RawMessage(`{"payload": "hello"}`)),
 		WithEventMetadata(json.RawMessage(`{"version": 2}`)),
 	)
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
 	DeregisterSubscriber("go_evt_data_meta_sub")
 
 	mu.Lock()
@@ -693,6 +739,9 @@ func TestSubscriberReceivesAllEventFields(t *testing.T) {
 
 	handle, _ := PushScope("field_test", ScopeTypeAgent)
 	PopScope(handle)
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(flushSubscribersFailed, err)
+	}
 	DeregisterSubscriber("go_full_evt_sub")
 
 	mu.Lock()

@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	toolCallFailed        = "ToolCall failed: %v"
-	toolCallExecuteFailed = "ToolCallExecute failed: %v"
-	registerFailed        = "register failed: %v"
-	executeFailed         = "execute failed: %v"
+	toolCallFailed             = "ToolCall failed: %v"
+	toolCallExecuteFailed      = "ToolCallExecute failed: %v"
+	registerFailed             = "register failed: %v"
+	executeFailed              = "execute failed: %v"
+	toolFlushSubscribersFailed = "FlushSubscribers failed: %v"
 )
 
 // ============================================================================
@@ -96,10 +97,13 @@ func TestToolEvents(t *testing.T) {
 		}
 		mu.Unlock()
 	})
+	defer func() { _ = DeregisterSubscriber("go_tool_evt") }()
 
 	handle, _ := ToolCall("evt_tool", json.RawMessage(`{}`))
 	ToolCallEnd(handle, json.RawMessage(`{}`))
-	DeregisterSubscriber("go_tool_evt")
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(toolFlushSubscribersFailed, err)
+	}
 
 	mu.Lock()
 	if !startSeen {
@@ -467,6 +471,9 @@ func TestToolSanitizeRequestGuardrailModifiesEventInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf(toolCallExecuteFailed, err)
 	}
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(toolFlushSubscribersFailed, err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -684,13 +691,16 @@ func TestToolCallWithToolCallID(t *testing.T) {
 			mu.Unlock()
 		}
 	})
+	defer func() { _ = DeregisterSubscriber("go_tool_call_id_sub") }()
 
 	handle, err := ToolCall("id_tool", json.RawMessage(`{}`), WithToolCallID("call_abc_123"))
 	if err != nil {
 		t.Fatalf(toolCallFailed, err)
 	}
 	ToolCallEnd(handle, json.RawMessage(`{}`))
-	DeregisterSubscriber("go_tool_call_id_sub")
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(toolFlushSubscribersFailed, err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -713,6 +723,7 @@ func TestToolEventInputOutput(t *testing.T) {
 		}
 		mu.Unlock()
 	})
+	defer func() { _ = DeregisterSubscriber("go_tool_io_sub") }()
 
 	_, err := ToolCallExecute("io_tool", json.RawMessage(`{"query": "test"}`),
 		func(args json.RawMessage) (json.RawMessage, error) {
@@ -722,7 +733,9 @@ func TestToolEventInputOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf(toolCallExecuteFailed, err)
 	}
-	DeregisterSubscriber("go_tool_io_sub")
+	if err := FlushSubscribers(); err != nil {
+		t.Fatalf(toolFlushSubscribersFailed, err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
