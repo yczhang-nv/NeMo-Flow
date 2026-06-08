@@ -545,6 +545,8 @@ impl OtelEventProcessor {
         let Some(mut active_span) = self.active_spans.remove(&event.uuid()) else {
             return;
         };
+
+        super::set_span_status_from_event_metadata(&mut active_span.span, event);
         active_span.span.set_attributes(end_attributes(event));
         active_span
             .span
@@ -659,11 +661,9 @@ fn start_attributes(event: &Event) -> Vec<KeyValue> {
 fn end_attributes(event: &Event) -> Vec<KeyValue> {
     let mut attributes = Vec::new();
     push_serialized(&mut attributes, "nemo_relay.end.data_json", event.data());
-    push_serialized(
-        &mut attributes,
-        "nemo_relay.end.metadata_json",
-        event.metadata(),
-    );
+
+    let metadata = event.metadata();
+    push_serialized(&mut attributes, "nemo_relay.end.metadata_json", metadata);
     push_serialized(
         &mut attributes,
         "nemo_relay.end.output_json",

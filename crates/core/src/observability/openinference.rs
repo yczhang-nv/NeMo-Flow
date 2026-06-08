@@ -551,6 +551,7 @@ impl OpenInferenceEventProcessor {
         let Some(mut active_span) = self.active_spans.remove(&event.uuid()) else {
             return;
         };
+        super::set_span_status_from_event_metadata(&mut active_span.span, event);
         active_span.span.set_attributes(end_attributes(event));
         active_span
             .span

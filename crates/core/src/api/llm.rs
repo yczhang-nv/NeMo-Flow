@@ -19,8 +19,8 @@ use crate::api::runtime::{
 use crate::api::scope::event;
 use crate::api::scope::{EmitMarkEventParams, ScopeHandle};
 use crate::api::shared::{
-    ensure_runtime_owner, resolve_parent_uuid, run_request_intercepts_with_codec,
-    snapshot_event_subscribers,
+    ensure_runtime_owner, metadata_with_otel_status, resolve_parent_uuid,
+    run_request_intercepts_with_codec, snapshot_event_subscribers,
 };
 use crate::codec::request::AnnotatedLlmRequest;
 use crate::codec::response::{AnnotatedLlmResponse, attach_estimated_cost_for_provider};
@@ -454,11 +454,13 @@ fn llm_call_end_with_behavior(
                 _ => None,
             },
         };
+
+        let end_metadata = metadata_with_otel_status(metadata, "OK", None);
         let event = state.build_llm_end_event(
             EndLlmHandleParams::builder()
                 .handle(handle)
                 .data_opt(data)
-                .metadata_opt(metadata)
+                .metadata_opt(end_metadata)
                 .annotated_response_opt(annotated_response)
                 .timestamp_opt(timestamp)
                 .build(),
@@ -641,7 +643,9 @@ pub async fn llm_call_execute(params: LlmCallExecuteParams) -> Result<Json> {
             Ok(response)
         }
         Err(error) => {
-            let _ = emit_llm_end_without_output(&handle, metadata);
+            let end_metadata =
+                metadata_with_otel_status(metadata, "ERROR", Some(error.to_string()));
+            let _ = emit_llm_end_without_output(&handle, end_metadata);
             Err(error)
         }
     }
@@ -792,7 +796,9 @@ pub async fn llm_stream_call_execute(params: LlmStreamCallExecuteParams) -> Resu
             Ok(Box::pin(wrapper) as LlmJsonStream)
         }
         Err(error) => {
-            let _ = emit_llm_end_without_output(&handle, metadata);
+            let end_metadata =
+                metadata_with_otel_status(metadata, "ERROR", Some(error.to_string()));
+            let _ = emit_llm_end_without_output(&handle, end_metadata);
             Err(error)
         }
     }
@@ -879,3 +885,7 @@ pub fn llm_conditional_execution(request: &LlmRequest) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/llm_api_tests.rs"]
+mod tests;

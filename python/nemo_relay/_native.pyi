@@ -1184,6 +1184,7 @@ def push_scope(
 def pop_scope(
     handle: ScopeHandle,
     output: Optional[_Json] = None,
+    metadata: Optional[_Json] = None,
     timestamp: datetime | None = None,
 ) -> None:
     """Pop a scope and emit its end event.
@@ -1191,6 +1192,7 @@ def pop_scope(
     Args:
         handle: Handle returned by ``push_scope``.
         output: Optional semantic output payload recorded on the end event.
+        metadata: Optional JSON metadata recorded on the end event.
         timestamp: Optional timezone-aware datetime recorded on the end event.
             When omitted, the runtime default end timestamp is used.
 
@@ -1199,8 +1201,8 @@ def pop_scope(
 
     Exceptional flow:
         Raises native runtime errors if ``handle`` is not the current scope or
-        if ``output`` cannot be converted to JSON-compatible data. Raises for
-        invalid timestamp types or naive datetimes.
+        if ``output`` or ``metadata`` cannot be converted to JSON-compatible data.
+        Raises for invalid timestamp types or naive datetimes.
     """
     ...
 
