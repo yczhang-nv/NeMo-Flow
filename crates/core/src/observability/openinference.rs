@@ -24,7 +24,7 @@ use super::{
     estimate_cost_for_response_or_model, estimate_cost_for_response_or_requested_model, manual,
     merge_usage, model_name_for_llm_event,
 };
-use crate::api::event::{Event, ScopeCategory};
+use crate::api::event::{Event, EventNormalizationExt, ScopeCategory};
 use crate::api::runtime::EventSubscriberFn;
 use crate::api::scope::ScopeType;
 use crate::api::subscriber::{deregister_subscriber, flush_subscribers, register_subscriber};
