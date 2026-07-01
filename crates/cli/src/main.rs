@@ -12,6 +12,7 @@ mod doctor;
 mod error;
 mod gateway;
 mod installer;
+mod json_path;
 mod launcher;
 mod model;
 mod model_pricing;
